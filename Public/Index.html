@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0b6e6e">
+<link rel="icon" href="/icon-192.png">
+<style>
+:root{--bg:#eef2f0;--panel:#fff;--ink:#17262b;--mute:#62747a;--line:#d5dedb;--accent:#0b6e6e;--mine:#0b6e6e;--mineInk:#fff;--theirs:#e4ebe8}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1a1d;--panel:#16252a;--ink:#e6efed;--mute:#8fa3a8;--line:#27393f;--accent:#35b3a8;--mine:#1f8f86;--theirs:#213338}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+@supports (height:100dvh){#app,#auth{height:100dvh}}
+body{font:16px/1.45 Georgia,'Times New Roman',serif;background:var(--bg);color:var(--ink)}
+button,input{font:inherit}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#auth{display:grid;place-items:center;height:100%;padding:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:28px;width:100%;max-width:360px}
+.card h1{margin:0 0 4px;font-size:28px}
+.card p{margin:0 0 18px;color:var(--mute)}
+label{display:block;margin:12px 0 4px;font-size:14px;color:var(--mute)}
+input{width:100%;padding:10px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--ink)}
+.btn{margin-top:18px;width:100%;padding:11px;border:0;border-radius:4px;background:var(--accent);color:#fff;cursor:pointer}
+.link{background:none;border:0;color:var(--accent);cursor:pointer;margin-top:12px;padding:0;text-decoration:underline}
+#err{color:#c0392b;min-height:20px;margin-top:10px;font-size:14px}
+#app{display:none;height:100%;grid-template-columns:240px 1fr}
+aside{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+aside header{padding:16px;border-bottom:1px solid var(--line)}
+aside header b{display:block}
+aside header button{margin-top:4px;font-size:13px}
+#list{overflow:auto;flex:1}
+.chat{display:flex;justify-content:space-between;width:100%;padding:12px 16px;border:0;background:none;color:var(--ink);text-align:left;cursor:pointer;border-bottom:1px solid var(--line)}
+.chat.active{background:var(--theirs)}
+.dot{width:9px;height:9px;border-radius:50%;background:#2ecc71;align-self:center}
+.badge{background:var(--accent);color:#fff;border-radius:10px;padding:0 7px;font-size:12px}
+main{display:flex;flex-direction:column;min-height:0}
+#title{padding:16px;border-bottom:1px solid var(--line);background:var(--panel);font-weight:bold}
+#msgs{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:8px}
+.m{max-width:72%;padding:8px 12px;border-radius:10px;background:var(--theirs);word-wrap:break-word}
+.m.me{align-self:flex-end;background:var(--mine);color:var(--mineInk)}
+.m small{display:block;font-size:12px;opacity:.7}
+form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);background:var(--panel)}
+form input{flex:1}
+form button{padding:0 18px;border:0;border-radius:4px;background:var(--accent);color:#fff;cursor:pointer}
+#back{display:none}
+@media (max-width:640px){
+ #app{grid-template-columns:1fr}
+ #app.chatting aside{display:none}
+ #app:not(.chatting) main{display:none}
+ #back{display:inline;background:none;border:0;color:var(--accent);cursor:pointer;margin-right:10px}
+}
+</style>
+</head>
+<body>
+<section id="auth">
+ <div class="card">
+  <h1 id="ah">Sign in</h1>
+  <p id="ap">Chat with anyone, anywhere.</p>
+  <label for="u">Username</label><input id="u" autocomplete="username">
+  <label for="p">Password</label><input id="p" type="password" autocomplete="current-password">
+  <div id="err" role="alert"></div>
+  <button class="btn" id="go">Sign in</button>
+  <button class="link" id="sw">Create an account</button>
+ </div>
+</section>
+
+<section id="app">
+ <aside>
+  <header><b id="me"></b><button class="link" id="out">Sign out</button></header>
+  <div id="list"></div>
+ </aside>
+ <main>
+  <div id="title"><button id="back">‹ Chats</button><span id="tt"></span></div>
+  <div id="msgs"></div>
+  <form id="f"><input id="t" placeholder="Type a message" autocomplete="off" maxlength="1000"><button>Send</button></form>
+ </main>
+</section>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+let mode = 'login', me = '', socket, current = 'general';
+let messages = [], online = [], users = [], unread = {};
+
+$('sw').onclick = () => {
+  mode = mode === 'login' ? 'signup' : 'login';
+  const s = mode === 'signup';
+  $('ah').textContent = s ? 'Create account' : 'Sign in';
+  $('go').textContent = s ? 'Create account' : 'Sign in';
+  $('sw').textContent = s ? 'I already have an account' : 'Create an account';
+  $('err').textContent = '';
+};
+$('go').onclick = submit;
+$('p').onkeydown = (e) => { if (e.key === 'Enter') submit(); };
+
+async function submit() {
+  $('err').textContent = '';
+  try {
+    const r = await fetch('/api/' + mode, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: $('u').value.trim(), password: $('p').value })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    localStorage.setItem('chat', JSON.stringify(d));
+    start(d);
+  } catch (e) { $('err').textContent = e.message; }
+}
+
+$('out').onclick = () => { localStorage.removeItem('chat'); location.reload(); };
+
+function start({ token, username }) {
+  me = username;
+  $('auth').style.display = 'none';
+  $('app').style.display = 'grid';
+  $('me').textContent = '@' + me;
+  socket = io({ auth: { token } });
+  socket.on('connect_error', () => { localStorage.removeItem('chat'); location.reload(); });
+  socket.on('history', (h) => { messages = h; render(); });
+  socket.on('newUser', (u) => { if (!users.includes(u)) users.push(u); renderList(); });
+  socket.on('online', (o) => { online = o; renderList(); });
+  socket.on('allUsers', (u) => { users = u; renderList(); });
+  socket.on('msg', (m) => {
+    messages.push(m);
+    const key = m.to === 'general' ? 'general' : (m.from === me ? m.to : m.from);
+    if (key !== current && m.from !== me) unread[key] = (unread[key] || 0) + 1;
+    if (!users.includes(m.from)) users.push(m.from);
+    render();
+  });
+}
+
+function key(m) { return m.to === 'general' ? 'general' : (m.from === me ? m.to : m.from); }
+
+function renderList() {
+  const l = $('list'); l.innerHTML = '';
+  const names = ['general', ...users.filter((u) => u !== me).sort()];
+  names.forEach((n) => {
+    const b = document.createElement('button');
+    b.className = 'chat' + (n === current ? ' active' : '');
+    const s = document.createElement('span');
+    s.textContent = n === 'general' ? '# General' : n;
+    b.append(s);
+    const r = document.createElement('span');
+    if (unread[n]) { r.className = 'badge'; r.textContent = unread[n]; }
+    else if (online.includes(n)) { r.className = 'dot'; r.title = 'Online'; }
+    b.append(r);
+    b.onclick = () => { current = n; unread[n] = 0; $('app').classList.add('chatting'); render(); };
+    l.append(b);
+  });
+}
+
+function render() {
+  renderList();
+  $('tt').textContent = current === 'general' ? '# General' : current;
+  const box = $('msgs'); box.innerHTML = '';
+  messages.filter((m) => key(m) === current).forEach((m) => {
+    const d = document.createElement('div');
+    d.className = 'm' + (m.from === me ? ' me' : '');
+    if (m.from !== me && current === 'general') {
+      const s = document.createElement('small'); s.textContent = m.from; d.append(s);
+    }
+    d.append(document.createTextNode(m.text));
+    const t = document.createElement('small');
+    t.textContent = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    d.append(t);
+    box.append(d);
+  });
+  box.scrollTop = box.scrollHeight;
+}
+
+$('back').onclick = () => $('app').classList.remove('chatting');
+$('f').onsubmit = (e) => {
+  e.preventDefault();
+  const v = $('t').value.trim();
+  if (!v) return;
+  socket.emit('msg', { to: current, text: v });
+  $('t').value = '';
+};
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+const saved = localStorage.getItem('chat');
+if (saved) { try { start(JSON.parse(saved)); } catch {} }
+</script>
+</body>
+</html>
